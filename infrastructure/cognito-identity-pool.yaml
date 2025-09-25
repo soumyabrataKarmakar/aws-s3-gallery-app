@@ -1,0 +1,166 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: AWS Cognito Identity Pool configuration for S3 Gallery App
+
+Parameters:
+  Environment:
+    Type: String
+    Default: dev
+    Description: Environment name (dev, staging, prod)
+    AllowedValues:
+      - dev
+      - staging
+      - prod
+
+  UserPoolId:
+    Type: String
+    Description: Cognito User Pool ID
+
+  UserPoolClientId:
+    Type: String
+    Description: Cognito User Pool Client ID
+
+  S3BucketArn:
+    Type: String
+    Description: S3 Bucket ARN for user files
+
+Resources:
+  # Cognito Identity Pool
+  S3GalleryIdentityPool:
+    Type: AWS::Cognito::IdentityPool
+    Properties:
+      IdentityPoolName: !Sub s3-gallery-identity-pool-${Environment}
+      AllowUnauthenticatedIdentities: false
+      CognitoIdentityProviders:
+        - ClientId: !Ref UserPoolClientId
+          ProviderName: !Sub cognito-idp.${AWS::Region}.amazonaws.com/${UserPoolId}
+          ServerSideTokenCheck: true
+
+  # IAM Role for Authenticated Users
+  S3GalleryAuthenticatedRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub S3Gallery-AuthenticatedRole-${Environment}
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Federated: cognito-identity.amazonaws.com
+            Action: sts:AssumeRoleWithWebIdentity
+            Condition:
+              StringEquals:
+                cognito-identity.amazonaws.com:aud: !Ref S3GalleryIdentityPool
+              ForAnyValue:StringLike:
+                cognito-identity.amazonaws.com:amr: authenticated
+
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonCognitoPowerUser
+
+      Policies:
+        - PolicyName: S3GalleryS3AccessPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              # Allow users to access their own private folder
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:PutObject
+                  - s3:DeleteObject
+                Resource: !Sub ${S3BucketArn}/private/$${cognito-identity.amazonaws.com:sub}/*
+
+              # Allow users to list objects in their private folder
+              - Effect: Allow
+                Action:
+                  - s3:ListBucket
+                Resource: !Ref S3BucketArn
+                Condition:
+                  StringLike:
+                    s3:prefix: private/${cognito-identity.amazonaws.com:sub}/*
+
+              # Allow users to upload to their private folder
+              - Effect: Allow
+                Action:
+                  - s3:PutObjectAcl
+                Resource: !Sub ${S3BucketArn}/private/$${cognito-identity.amazonaws.com:sub}/*
+
+              # Allow users to get their own identity information
+              - Effect: Allow
+                Action:
+                  - cognito-identity:GetId
+                  - cognito-identity:GetCredentialsForIdentity
+                  - cognito-identity:GetOpenIdToken
+                Resource: '*'
+
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Application
+          Value: S3GalleryApp
+        - Key: CreatedBy
+          Value: CloudFormation
+
+  # IAM Role for Unauthenticated Users (minimal permissions)
+  S3GalleryUnauthenticatedRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub S3Gallery-UnauthenticatedRole-${Environment}
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Federated: cognito-identity.amazonaws.com
+            Action: sts:AssumeRoleWithWebIdentity
+            Condition:
+              StringEquals:
+                cognito-identity.amazonaws.com:aud: !Ref S3GalleryIdentityPool
+              ForAnyValue:StringLike:
+                cognito-identity.amazonaws.com:amr: unauthenticated
+
+      Policies:
+        - PolicyName: S3GalleryUnauthenticatedPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              # Minimal permissions - only allow getting identity
+              - Effect: Allow
+                Action:
+                  - cognito-identity:GetId
+                Resource: '*'
+
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Application
+          Value: S3GalleryApp
+        - Key: CreatedBy
+          Value: CloudFormation
+
+  # Identity Pool Role Attachment
+  S3GalleryIdentityPoolRoleAttachment:
+    Type: AWS::Cognito::IdentityPoolRoleAttachment
+    Properties:
+      IdentityPoolId: !Ref S3GalleryIdentityPool
+      Roles:
+        authenticated: !GetAtt S3GalleryAuthenticatedRole.Arn
+        unauthenticated: !GetAtt S3GalleryUnauthenticatedRole.Arn
+
+Outputs:
+  IdentityPoolId:
+    Description: Cognito Identity Pool ID
+    Value: !Ref S3GalleryIdentityPool
+    Export:
+      Name: !Sub ${AWS::StackName}-IdentityPoolId
+
+  AuthenticatedRoleArn:
+    Description: IAM Role ARN for authenticated users
+    Value: !GetAtt S3GalleryAuthenticatedRole.Arn
+    Export:
+      Name: !Sub ${AWS::StackName}-AuthenticatedRoleArn
+
+  UnauthenticatedRoleArn:
+    Description: IAM Role ARN for unauthenticated users
+    Value: !GetAtt S3GalleryUnauthenticatedRole.Arn
+    Export:
+      Name: !Sub ${AWS::StackName}-UnauthenticatedRoleArn
